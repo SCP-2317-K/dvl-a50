@@ -1,0 +1,100 @@
+import json
+import socket
+import time
+
+# DVL A50 預設網路設定
+DVL_IP = "192.168.2.95"
+DVL_PORT = 16171
+
+# 抓取資料的時間限制（秒）
+RECORD_DURATION = 15.0
+
+
+def main():
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.settimeout(5.0)
+
+    try:
+        print(f"正在連線至 DVL A50 ({DVL_IP}:{DVL_PORT})...")
+        client.connect((DVL_IP, DVL_PORT))
+        client.settimeout(None)
+        print("連線成功！")
+
+        # ==========================================
+        # 步驟 1: 發送 重置 (Reset) 指令
+        # ==========================================
+        reset_cmd = {"command": "reset_dead_reckoning"}
+        cmd_str = json.dumps(reset_cmd) + "\n"
+
+        client.sendall(cmd_str.encode("utf-8"))
+        print("已發送 Reset 位置重置指令 (reset_dead_reckoning)...")
+
+        # ==========================================
+        # 步驟 2: 設定計時器，準備接收 15 秒資料
+        # ==========================================
+        start_time = time.time()
+        print(f"開始接收原始資料，將在 {RECORD_DURATION} 秒後自動停止...\n")
+
+        buffer = ""
+        total_packets = 0
+
+        while True:
+            # 檢查是否已達到 15 秒限制
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= RECORD_DURATION:
+                print(
+                    f"\n時間到！已滿 {RECORD_DURATION} 秒，停止抓取資料。"
+                )
+                break
+
+            # 設定接收 Socket 的 Timeout（避免最後幾毫秒死等 blocking）
+            client.settimeout(0.5)
+
+            try:
+                raw_data = client.recv(1024)
+                if not raw_data:
+                    print("連線已中斷")
+                    break
+
+                buffer += raw_data.decode("utf-8", errors="ignore")
+
+                # 依換行符 '\n' 切分完整的 JSON 訊息
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+
+                    if line:
+                        try:
+                            pkt = json.loads(line)
+                            total_packets += 1
+
+                            # 印出資料與當前經過時間
+                            print(f"[{elapsed_time:5.2f}s] 收到封包:")
+                            pretty_json = json.dumps(
+                                pkt, indent=2, ensure_ascii=False
+                            )
+                            print(pretty_json)
+                            print("-" * 50)
+
+                        except json.JSONDecodeError:
+                            pass
+
+            except socket.timeout:
+                # 0.5 秒內沒拿到新封包是正常的，繼續進入迴圈檢查 elapsed_time
+                continue
+
+        print(f"【任務完成】15 秒內共成功擷取 {total_packets} 筆 DVL 封包。")
+
+    except socket.timeout:
+        print(
+            f"連線失敗：無法連上 {DVL_IP}:{DVL_PORT}，請確認 IP 設定與硬體線路。"
+        )
+    except Exception as e:
+        print(f"發生錯誤: {e}")
+    finally:
+        client.close()
+        print("Socket 已安全關閉。")
+
+
+if __name__ == "__main__":
+    main()
