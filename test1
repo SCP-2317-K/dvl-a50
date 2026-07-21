@@ -1,0 +1,69 @@
+import json
+import socket
+
+# DVL A50 預設網路設定
+DVL_IP = "192.168.194.95"
+DVL_PORT = 16171
+
+
+def main():
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.settimeout(5.0)
+
+    try:
+        print(f"正在連線至 DVL A50 ({DVL_IP}:{DVL_PORT})...")
+        client.connect((DVL_IP, DVL_PORT))
+        client.settimeout(None)
+        print("連線成功！開始接收並呈現【所有原始封包數據】...\n")
+
+        buffer = ""
+
+        while True:
+            # 讀取 Raw Bytes 資料
+            raw_data = client.recv(1024)
+            if not raw_data:
+                print("連線已中斷")
+                break
+
+            buffer += raw_data.decode("utf-8", errors="ignore")
+
+            # 依換行符 '\n' 切分完整的 JSON 訊息
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+
+                if line:
+                    try:
+                        # 將字串轉成 JSON 字典
+                        pkt = json.loads(line)
+
+                        print("=" * 60)
+                        print(
+                            f"【收到完整封包】類型 (type): {pkt.get('type', 'N/A')} | 格式 (format): {pkt.get('format', 'N/A')}"
+                        )
+                        print("-" * 60)
+
+                        # 印出漂亮排版後的完整 JSON（包含所有欄位與數值）
+                        pretty_json = json.dumps(
+                            pkt, indent=2, ensure_ascii=False
+                        )
+                        print(pretty_json)
+                        print("=" * 60 + "\n")
+
+                    except json.JSONDecodeError:
+                        # 處理極少數未接收完整的殘缺字串
+                        print(f"[JSON 解析錯誤] 原始字串: {line}")
+
+    except socket.timeout:
+        print(
+            f"連線失敗：無法連上 {DVL_IP}:{DVL_PORT}，請確認電腦 IP 是否設為 192.168.2.X"
+        )
+    except Exception as e:
+        print(f"發生錯誤: {e}")
+    finally:
+        client.close()
+        print("Socket 已關閉。")
+
+
+if __name__ == "__main__":
+    main()
