@@ -1,0 +1,78 @@
+def process_packet(self, pkt):
+        """解析 JSON 封包並更新變數，加入 None 安全防護"""
+        pkt_type = pkt.get("type")
+        
+        # 安全轉換浮點數的輔助函式，遇到 None 就回傳 0.0
+        def safe_float(val, default=0.0):
+            try:
+                return float(val) if val is not None else default
+            except (ValueError, TypeError):
+                return default
+
+        if pkt_type == "velocity":
+            self.data_valid = pkt.get("valid", False)
+            
+            # 使用 safe_float 避免 DVL 傳回 null 導致程式崩潰
+            self.vx = safe_float(pkt.get("vx"))
+            self.vy = safe_float(pkt.get("vy"))
+            self.vz = safe_float(pkt.get("vz"))
+            
+            # 手動積分計算位置
+            time_ms = safe_float(pkt.get("time"))
+            if self.last_time is not None and self.data_valid:
+                dt = (time_ms - self.last_time) / 1000.0
+                if 0 < dt < 1.0:  # 避免異常的時間跳躍
+                    self.raw_x += self.vx * dt
+                    self.raw_y += self.vy * dt
+                    self.raw_z += self.vz * dt
+            self.last_time = time_ms
+            
+        elif pkt_type == "position_local":
+            self.raw_x = safe_float(pkt.get("x"), self.raw_x)
+            self.raw_y = safe_float(pkt.get("y"), self.raw_y)
+            self.raw_z = safe_float(pkt.get("z"), self.raw_z)
+
+    def tcp_loop(self):
+        """背景執行緒：處理 Socket 連線與接收"""
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(5.0)
+
+        try:
+            print(f"正在連線至 DVL A50 ({DVL_IP}:{DVL_PORT})...")
+            client.connect((DVL_IP, DVL_PORT))
+            client.settimeout(None)
+            self.is_connected = True
+            print("連線成功！開始接收資料...")
+            buffer = ""
+
+            while self.running:
+                raw_data = client.recv(2048)
+                if not raw_data:
+                    print("DVL 斷開連線")
+                    self.is_connected = False
+                    break
+                
+                buffer += raw_data.decode("utf-8", errors="ignore")
+                
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        try:
+                            pkt = json.loads(line)
+                            self.process_packet(pkt)
+                        except json.JSONDecodeError:
+                            print(f"[JSON 解析錯誤]: {line}")
+                        except Exception as e:
+                            # 攔截處理封包時的錯誤，避免整個執行緒崩潰
+                            print(f"[資料處理錯誤]: {e} | 原始資料: {line}")
+                            
+        except socket.timeout:
+            print(f"連線失敗：無法連上 {DVL_IP}:{DVL_PORT} (Timeout)")
+            self.is_connected = False
+        except Exception as e:
+            print(f"網路執行緒發生錯誤: {e}")
+            self.is_connected = False
+        finally:
+            client.close()
+            print("Socket 已關閉。")
