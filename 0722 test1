@@ -1,4 +1,81 @@
-def process_packet(self, pkt):
+import json
+import socket
+import threading
+import tkinter as tk
+from tkinter import ttk
+
+# DVL A50 預設網路設定
+DVL_IP = "192.168.2.95"
+DVL_PORT = 16171
+
+class DVLMonitorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Water Linked DVL A50 監測面板")
+        self.root.geometry("400x420")
+        self.root.configure(padx=20, pady=20)
+
+        # --- 數據變數 ---
+        self.is_connected = False
+        self.data_valid = False
+        self.vx, self.vy, self.vz = 0.0, 0.0, 0.0
+        
+        # 實際位置 (Raw) 與 偏移量 (Offset)
+        self.raw_x, self.raw_y, self.raw_z = 0.0, 0.0, 0.0
+        self.offset_x, self.offset_y, self.offset_z = 0.0, 0.0, 0.0
+        
+        self.last_time = None
+
+        # --- 建立 UI 介面 ---
+        self.create_widgets()
+
+        # --- 啟動網路背景執行緒 ---
+        self.running = True
+        self.net_thread = threading.Thread(target=self.tcp_loop, daemon=True)
+        self.net_thread.start()
+
+        # --- 啟動 UI 定時更新 ---
+        self.update_ui()
+
+    def create_widgets(self):
+        # 狀態顯示
+        self.lbl_status = ttk.Label(self.root, text="連線狀態: 等待連線...", font=("Arial", 12, "bold"))
+        self.lbl_status.grid(row=0, column=0, columnspan=2, pady=(0, 15), sticky="w")
+
+        # 速度顯示區 (Velocity)
+        frame_vel = ttk.LabelFrame(self.root, text=" 速度 (Velocity - m/s) ", padding=10)
+        frame_vel.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5)
+        
+        self.lbl_vx = ttk.Label(frame_vel, text="Vx: 0.000", font=("Arial", 11))
+        self.lbl_vx.grid(row=0, column=0, pady=2)
+        self.lbl_vy = ttk.Label(frame_vel, text="Vy: 0.000", font=("Arial", 11))
+        self.lbl_vy.grid(row=1, column=0, pady=2)
+        self.lbl_vz = ttk.Label(frame_vel, text="Vz: 0.000", font=("Arial", 11))
+        self.lbl_vz.grid(row=2, column=0, pady=2)
+
+        # 位置顯示區 (Position)
+        frame_pos = ttk.LabelFrame(self.root, text=" 位置 (Position - m) ", padding=10)
+        frame_pos.grid(row=2, column=0, columnspan=2, sticky="ew", pady=15)
+        
+        self.lbl_px = ttk.Label(frame_pos, text="X: 0.000", font=("Arial", 11, "bold"), foreground="blue")
+        self.lbl_px.grid(row=0, column=0, pady=2)
+        self.lbl_py = ttk.Label(frame_pos, text="Y: 0.000", font=("Arial", 11, "bold"), foreground="blue")
+        self.lbl_py.grid(row=1, column=0, pady=2)
+        self.lbl_pz = ttk.Label(frame_pos, text="Z: 0.000", font=("Arial", 11, "bold"), foreground="blue")
+        self.lbl_pz.grid(row=2, column=0, pady=2)
+
+        # 歸零按鈕
+        self.btn_reset = ttk.Button(self.root, text="位置歸零 (Reset)", command=self.reset_position)
+        self.btn_reset.grid(row=3, column=0, columnspan=2, pady=10, ipadx=20, ipady=5)
+
+    def reset_position(self):
+        """將當前位置設為偏移量，實現軟體歸零"""
+        self.offset_x = self.raw_x
+        self.offset_y = self.raw_y
+        self.offset_z = self.raw_z
+        print("位置已歸零！")
+
+    def process_packet(self, pkt):
         """解析 JSON 封包並更新變數，加入 None 安全防護"""
         pkt_type = pkt.get("type")
         
@@ -76,3 +153,43 @@ def process_packet(self, pkt):
         finally:
             client.close()
             print("Socket 已關閉。")
+
+    def update_ui(self):
+        """定時更新 UI 畫面上的數值 (每 100 毫秒)"""
+        # 更新狀態
+        if self.is_connected:
+            if self.data_valid:
+                self.lbl_status.config(text="連線狀態: 🟢 已連線 (資料有效)", foreground="green")
+            else:
+                self.lbl_status.config(text="連線狀態: 🟠 已連線 (尋找底部中...)", foreground="orange")
+        else:
+            self.lbl_status.config(text="連線狀態: 🔴 已斷線", foreground="red")
+
+        # 更新速度
+        self.lbl_vx.config(text=f"Vx: {self.vx:8.4f}")
+        self.lbl_vy.config(text=f"Vy: {self.vy:8.4f}")
+        self.lbl_vz.config(text=f"Vz: {self.vz:8.4f}")
+
+        # 計算顯示位置 (真實位置 - 歸零偏移量)
+        display_x = self.raw_x - self.offset_x
+        display_y = self.raw_y - self.offset_y
+        display_z = self.raw_z - self.offset_z
+
+        # 更新位置
+        self.lbl_px.config(text=f"X: {display_x:8.4f}")
+        self.lbl_py.config(text=f"Y: {display_y:8.4f}")
+        self.lbl_pz.config(text=f"Z: {display_z:8.4f}")
+
+        # 設定 100ms 後再次執行自己 (Tkinter 的定時器寫法)
+        self.root.after(100, self.update_ui)
+
+    def on_closing(self):
+        """關閉視窗時的清理工作"""
+        self.running = False
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = DVLMonitorApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
+    root.mainloop()
